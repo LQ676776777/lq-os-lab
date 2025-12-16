@@ -7,11 +7,28 @@
 #include "string.h"
 #include "riscv.h"
 #include "spike_interface/spike_utils.h"
+#define SHT_SYMTAB 2
+#define SHY_STRTAB 3
 
 typedef struct elf_info_t {
   spike_file_t *f;
   process *p;
 } elf_info;
+
+typedef struct elf_section_header_t {
+  uint32 name;
+  uint32 type;
+  uint64 flags;
+  uint64 addr;
+  uint64 off;
+  uint64 size;
+  uint32 link;
+  uint32 info;
+  uint64 addralign;
+  uint64 entsize;
+} elf_section_header;
+
+
 
 //
 // the implementation of allocater. allocates memory space for later segment loading
@@ -75,6 +92,46 @@ elf_status elf_load(elf_ctx *ctx) {
   return EL_OK;
 }
 
+
+
+static void load_user_symbols(elf_ctx *ctx) {
+  elf_info *msg = (elf_info *)ctx->info;
+  process *proc = msg->p;
+
+  if (!ctx->ehdr.shentsize || !ctx->ehdr.shnum) return;
+
+  elf_section_header sh, sym = {0}, str = {0};
+  int found = 0;
+
+  for(size_t i = 0; i < ctx->ehdr.shnum; i++) {
+    if(elf_fpread(ctx, &sh, sizeof(sh), ctx->ehdr.shoff + i * ctx->ehdr.shentsize) != sizeof(sh)) panic("read section header failed");
+
+    if (sh.type == SHT_SYMTAB) {
+      sym = sh;
+      if (sh.link >= ctx->ehdr.shnum) panic("invalid strtab index");
+      if (elf_fpread(ctx, &str, sizeof(str),
+                     ctx->ehdr.shoff + sh.link * ctx->ehdr.shentsize) != sizeof(str))
+        panic("read strtab header failed");
+      found = 1;
+      break;
+    }
+  }
+  if (!found) return;
+
+  if (str.size > MAX_USER_STRTAB) panic(".strtab too large");
+  if (elf_fpread(ctx, proc->strtab, str.size, str.off) != str.size)
+    panic("load .strtab failed");
+  proc->strtab_sz = str.size;
+
+  size_t ents = sym.size / sym.entsize;
+  if (ents > MAX_USER_SYMS) panic(".symtab too many entries");
+  if (sym.entsize != sizeof(proc->symtab[0])) panic("unexpected sym entsize");
+  if (elf_fpread(ctx, proc->symtab, ents * sizeof(proc->symtab[0]), sym.off)
+      != ents * sizeof(proc->symtab[0]))
+    panic("load .symtab failed");
+  proc->sym_count = ents;
+}
+
 typedef union {
   uint64 buf[MAX_CMDLINE_ARGS];
   char *argv[MAX_CMDLINE_ARGS];
@@ -130,6 +187,8 @@ void load_bincode_from_host_elf(process *p) {
   // load elf. elf_load() is defined above.
   if (elf_load(&elfloader) != EL_OK) panic("Fail on loading elf.\n");
 
+  load_user_symbols(&elfloader);
+
   // entry (virtual, also physical in lab1_x) address
   p->trapframe->epc = elfloader.ehdr.entry;
 
@@ -138,3 +197,4 @@ void load_bincode_from_host_elf(process *p) {
 
   sprint("Application program entry point (virtual address): 0x%lx\n", p->trapframe->epc);
 }
+
