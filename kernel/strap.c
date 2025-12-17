@@ -9,6 +9,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "util/functions.h"
+#include "util/string.h"
 
 #include "spike_interface/spike_utils.h"
 
@@ -64,7 +65,25 @@ void handle_user_page_fault(uint64 mcause, uint64 sepc, uint64 stval) {
       // dynamically increase application stack.
       // hint: first allocate a new physical page, and then, maps the new page to the
       // virtual address that causes the page fault.
-      panic( "You need to implement the operations that actually handle the page fault in lab2_3.\n" );
+      // panic( "You need to implement the operations that actually handle the page fault in lab2_3.\n" );
+      // 1. 分配一个新的物理页
+      void *pa = alloc_page();
+      if (pa == 0) {
+          panic("Out of memory during stack expansion!");
+      }
+      
+      // 将新分配的页清零（这是一个好习惯，防止泄漏旧数据）
+      memset(pa, 0, PGSIZE);
+
+      // 2. 将发生缺页的虚拟地址 stval 向下对齐到页边界
+      // 因为映射必须以页（4KB）为单位。例如故障地址是 0x...ff8，我们需要映射 0x...000 开始的一整页
+      uint64 va = ROUNDDOWN(stval, PGSIZE);
+
+      // 3. 建立映射
+      // 使用 current->pagetable（当前进程页表）
+      // 权限需要是 可读(PROT_READ) | 可写(PROT_WRITE)，并且用户可访问(user=1)
+      user_vm_map((pagetable_t)current->pagetable, va, PGSIZE, (uint64)pa,
+             prot_to_type(PROT_WRITE | PROT_READ, 1));
 
       break;
     default:
