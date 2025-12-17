@@ -159,7 +159,32 @@ void *user_va_to_pa(pagetable_t page_dir, void *va) {
   // (va & (1<<PGSHIFT -1)) means computing the offset of "va" inside its page.
   // Also, it is possible that "va" is not mapped at all. in such case, we can find
   // invalid PTE, and should return NULL.
-  panic( "You have to implement user_va_to_pa (convert user va to pa) to print messages in lab2_1.\n" );
+  // panic( "You have to implement user_va_to_pa (convert user va to pa) to print messages in lab2_1.\n" );
+  // 1. 将 va 转换为 uint64 类型以便进行位运算
+  uint64 vaddr = (uint64)va;
+
+  // 2. 使用 page_walk 辅助函数查找该虚拟地址对应的页表项 (PTE)
+  // 参数 0 表示如果中间页表不存在，不进行分配 (alloc = 0)
+  pte_t *pte = page_walk(page_dir, vaddr, 0);
+
+  // 3. 检查 page_walk 的返回值
+  // 如果 pte 为 NULL，说明页表结构本身不完整（中间某一级缺失）
+  // 如果 (*pte & PTE_V) 为 0，说明找到了 PTE，但该页标记为无效
+  if (pte != 0 && (*pte & PTE_V)) {
+    // 4. 从 PTE 中提取物理页基地址
+    // PTE2PA 宏定义在 riscv.h 中，用于从 PTE 数据中通过移位获得物理地址
+    uint64 pa_base = PTE2PA(*pte);
+
+    // 5. 计算页内偏移 (Offset)
+    // 虚拟地址的低 12 位 (PGSHIFT) 是偏移量
+    uint64 offset = vaddr & ((1 << PGSHIFT) - 1);
+
+    // 6. 组合基地址和偏移量，得到最终物理地址
+    return (void *)(pa_base | offset);
+  }
+
+  // 如果映射不存在或无效，返回 NULL
+  return NULL;
 
 }
 
