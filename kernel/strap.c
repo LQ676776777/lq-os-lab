@@ -10,6 +10,7 @@
 #include "vmm.h"
 #include "util/functions.h"
 #include "util/string.h"
+#include "memlayout.h"
 
 #include "spike_interface/spike_utils.h"
 
@@ -61,31 +62,41 @@ void handle_user_page_fault(uint64 mcause, uint64 sepc, uint64 stval) {
   sprint("handle_page_fault: %lx\n", stval);
   switch (mcause) {
     case CAUSE_STORE_PAGE_FAULT:
-      {// TODO (lab2_3): implement the operations that solve the page fault to
+    case CAUSE_LOAD_PAGE_FAULT:  
+    {// TODO (lab2_3): implement the operations that solve the page fault to
       // dynamically increase application stack.
       // hint: first allocate a new physical page, and then, maps the new page to the
       // virtual address that causes the page fault.
       // panic( "You need to implement the operations that actually handle the page fault in lab2_3.\n" );
       // 1. 分配一个新的物理页
-      void *pa = alloc_page();
-      if (pa == 0) {
-          panic("Out of memory during stack expansion!");
+      // 定义栈的最大增长范围，20 页
+      uint64 stack_limit = USER_STACK_TOP - 20 * PGSIZE;
+
+      // 判断缺页地址是否在合法的栈范围内
+      // 1. 地址必须小于栈顶 USER_STACK_TOP
+      // 2. 地址必须大于我们要限制的栈底 stack_limit
+      if (stval >= stack_limit && stval < USER_STACK_TOP) {
+          // --- 情况A：合法的栈增长 ---
+          
+          // 1. 分配物理页
+          void *pa = alloc_page();
+          if (pa == 0) {
+              panic("Out of memory during stack expansion!");
+          }
+          memset(pa, 0, PGSIZE);
+
+          // 2. 建立映射
+          uint64 va = ROUNDDOWN(stval, PGSIZE);
+          user_vm_map((pagetable_t)current->pagetable, va, PGSIZE, (uint64)pa,
+                 prot_to_type(PROT_WRITE | PROT_READ, 1));
+                 
+      } else {
+          // --- 情况B：非法地址访问 ---
+          sprint("this address is not available!\n");
+          // 退出系统，返回错误码 -1 (符合预期输出)
+          shutdown(-1);
       }
-      
-      // 将新分配的页清零（防止泄漏旧数据）
-      memset(pa, 0, PGSIZE);
-
-      // 2. 将发生缺页的虚拟地址 stval 向下对齐到页边界
-      // 因为映射必须以页（4KB）为单位。例如故障地址是 0x...ff8，我们需要映射 0x...000 开始的一整页
-      uint64 va = ROUNDDOWN(stval, PGSIZE);
-
-      // 3. 建立映射
-      // 使用 current->pagetable（当前进程页表）
-      // 权限需要是 可读(PROT_READ) | 可写(PROT_WRITE)，并且用户可访问(user=1)
-      user_vm_map((pagetable_t)current->pagetable, va, PGSIZE, (uint64)pa,
-             prot_to_type(PROT_WRITE | PROT_READ, 1));
-
-      break;
+      break;    
       }
     default:
       sprint("unknown page fault.\n");
