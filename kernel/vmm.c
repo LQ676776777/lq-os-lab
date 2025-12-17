@@ -209,6 +209,35 @@ void user_vm_unmap(pagetable_t page_dir, uint64 va, uint64 size, int free) {
   // (use free_page() defined in pmm.c) the physical pages. lastly, invalidate the PTEs.
   // as naive_free reclaims only one page at a time, you only need to consider one page
   // to make user/app_naive_malloc to behave correctly.
-  panic( "You have to implement user_vm_unmap to free pages using naive_free in lab2_2.\n" );
+  // panic( "You have to implement user_vm_unmap to free pages using naive_free in lab2_2.\n" );
+  // 1. 计算要操作的起始页和结束页地址（向下取整对齐）
+  // ROUNDDOWN 和 PGSIZE 定义在 util/functions.h 和 riscv.h 中
+  uint64 first, last;
+  pte_t *pte;
+
+  for (first = ROUNDDOWN(va, PGSIZE), last = ROUNDDOWN(va + size - 1, PGSIZE);
+       first <= last; first += PGSIZE) {
+
+    // 2. 查找页表项 (page_walk)
+    // alloc = 0 表示我们只是查找，如果中间页表不存在也不要创建
+    pte = page_walk(page_dir, first, 0);
+
+    // 3. 检查页表项是否存在且有效
+    // 如果 pte 为空或者 PTE_V 位为 0，说明没有映射，直接跳过
+    if (pte == 0 || (*pte & PTE_V) == 0) {
+      continue;
+    }
+
+    // 4. 如果需要释放物理内存 (free == 1)
+    if (free) {
+      // 从 PTE 中获取物理地址 (PTE2PA 宏)
+      uint64 pa = PTE2PA(*pte);
+      // 调用 pmm.c 中的 free_page 归还物理页
+      free_page((void *)pa);
+    }
+
+    // 5. 清除页表项，解除映射
+    *pte = 0;
+  }
 
 }
