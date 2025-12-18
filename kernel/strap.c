@@ -102,7 +102,16 @@ void rrsched() {
   // hint: increase the tick_count member of current process by one, if it is bigger than
   // TIME_SLICE_LEN (means it has consumed its time slice), change its status into READY,
   // place it in the rear of ready queue, and finally schedule next process to run.
-  panic( "You need to further implement the timer handling in lab3_3.\n" );
+  // panic( "You need to further implement the timer handling in lab3_3.\n" );
+  //先进行tick_count++，如果判断为假，直接返回
+  current->tick_count++;
+  if(current->tick_count>=TIME_SLICE_LEN)
+  {
+    current->tick_count = 0;
+    current->status = READY;  // 修改状态为就绪
+    insert_to_ready_queue(current);  // 放入就绪队列末尾
+    schedule();  // 调度下一个进程
+  }
 
 }
 
