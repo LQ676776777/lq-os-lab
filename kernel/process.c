@@ -231,7 +231,22 @@ int do_fork( process* parent)
         // address region of child to the physical pages that actually store the code
         // segment of parent process.
         // DO NOT COPY THE PHYSICAL PAGES, JUST MAP THEM.
-        panic( "You need to implement the code segment mapping of child in lab3_1.\n" );
+        // panic( "You need to implement the code segment mapping of child in lab3_1.\n" );
+        // 1. 获取父进程代码段的起始虚拟地址 (va)
+        uint64 code_va = parent->mapped_info[i].va;
+        
+        // 2. 通过父进程的页表查找该虚拟地址对应的物理地址 (pa)
+        // lookup_pa 定义在 vmm.c 中
+        uint64 code_pa = lookup_pa(parent->pagetable, code_va);
+        
+        // 3. 将父进程的物理地址映射到子进程的页表中
+        // 使用 user_vm_map，权限设为可读、可执行 (user=1)
+        // prot_to_type(PROT_READ | PROT_EXEC, 1) 会生成正确的 PTE 标志位
+        user_vm_map(child->pagetable, code_va, PGSIZE, code_pa,
+                    prot_to_type(PROT_READ | PROT_EXEC, 1));
+
+        sprint("do_fork map code segment at pa:%lx of parent to child at va:%lx.\n", 
+               code_pa, code_va);
 
         // after mapping, register the vm region (do not delete codes below!)
         child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
