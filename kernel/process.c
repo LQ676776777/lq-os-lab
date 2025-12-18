@@ -191,7 +191,7 @@ int do_fork( process* parent)
         memcpy( (void*)lookup_pa(child->pagetable, child->mapped_info[STACK_SEGMENT].va),
           (void*)lookup_pa(parent->pagetable, parent->mapped_info[i].va), PGSIZE );
         break;
-      case HEAP_SEGMENT:
+      case HEAP_SEGMENT:{
         // build a same heap for child process.
 
         // convert free_pages_address into a filter to skip reclaimed blocks in the heap
@@ -220,8 +220,9 @@ int do_fork( process* parent)
 
         // copy the heap manager from parent to child
         memcpy((void*)&child->user_heap, (void*)&parent->user_heap, sizeof(parent->user_heap));
+      }
         break;
-      case CODE_SEGMENT:
+      case CODE_SEGMENT:{
         // TODO (lab3_1): implment the mapping of child code segment to parent's
         // code segment.
         // hint: the virtual address mapping of code segment is tracked in mapped_info
@@ -231,7 +232,22 @@ int do_fork( process* parent)
         // address region of child to the physical pages that actually store the code
         // segment of parent process.
         // DO NOT COPY THE PHYSICAL PAGES, JUST MAP THEM.
-        panic( "You need to implement the code segment mapping of child in lab3_1.\n" );
+        // panic( "You need to implement the code segment mapping of child in lab3_1.\n" );
+        // 1. 获取父进程代码段的起始虚拟地址 (va)
+        uint64 code_va = parent->mapped_info[i].va;
+        
+        // 2. 通过父进程的页表查找该虚拟地址对应的物理地址 (pa)
+        // lookup_pa 定义在 vmm.c 中
+        uint64 code_pa = lookup_pa(parent->pagetable, code_va);
+        
+        // 3. 将父进程的物理地址映射到子进程的页表中
+        // 使用 user_vm_map，权限设为可读、可执行 (user=1)
+        // prot_to_type(PROT_READ | PROT_EXEC, 1) 会生成正确的 PTE 标志位
+        user_vm_map(child->pagetable, code_va, PGSIZE, code_pa,
+                    prot_to_type(PROT_READ | PROT_EXEC, 1));
+
+        sprint("do_fork map code segment at pa:%lx of parent to child at va:%lx.\n", 
+               code_pa, code_va);
 
         // after mapping, register the vm region (do not delete codes below!)
         child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
@@ -239,6 +255,7 @@ int do_fork( process* parent)
           parent->mapped_info[i].npages;
         child->mapped_info[child->total_mapped_region].seg_type = CODE_SEGMENT;
         child->total_mapped_region++;
+      }
         break;
     }
   }
