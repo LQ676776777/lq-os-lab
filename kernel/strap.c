@@ -10,6 +10,7 @@
 #include "vmm.h"
 #include "sched.h"
 #include "util/functions.h"
+#include "util/string.h"
 
 #include "spike_interface/spike_utils.h"
 
@@ -26,7 +27,11 @@ static void handle_syscall(trapframe *tf) {
   // kernel/syscall.c) to conduct real operations of the kernel side for a syscall.
   // IMPORTANT: return value should be returned to user app, or else, you will encounter
   // problems in later experiments!
-  panic( "call do_syscall to accomplish the syscall and lab1_1 here.\n" );
+  // panic( "call do_syscall to accomplish the syscall and lab1_1 here.\n" );
+  // 处理系统调用参数并获取返回值
+  long ret = do_syscall(tf->regs.a0, tf->regs.a1, tf->regs.a2, tf->regs.a3,
+                          tf->regs.a4, tf->regs.a5, tf->regs.a6, tf->regs.a7);
+  tf->regs.a0 = ret; // 返回值写回 a0
 
 }
 
@@ -41,7 +46,10 @@ void handle_mtimer_trap() {
   // TODO (lab1_3): increase g_ticks to record this "tick", and then clear the "SIP"
   // field in sip register.
   // hint: use write_csr to disable the SIP_SSIP bit in sip.
-  panic( "lab1_3: increase g_ticks by one, and clear SIP field in sip register.\n" );
+  // panic( "lab1_3: increase g_ticks by one, and clear SIP field in sip register.\n" );
+  g_ticks++; 
+    // 清除 SIP 寄存器的 SSIP 位
+  write_csr(sip, read_csr(sip) & ~SIP_SSIP);
 
 }
 
@@ -54,13 +62,32 @@ void handle_user_page_fault(uint64 mcause, uint64 sepc, uint64 stval) {
   sprint("handle_page_fault: %lx\n", stval);
   switch (mcause) {
     case CAUSE_STORE_PAGE_FAULT:
-      // TODO (lab2_3): implement the operations that solve the page fault to
+      {// TODO (lab2_3): implement the operations that solve the page fault to
       // dynamically increase application stack.
       // hint: first allocate a new physical page, and then, maps the new page to the
       // virtual address that causes the page fault.
-      panic( "You need to implement the operations that actually handle the page fault in lab2_3.\n" );
+      // panic( "You need to implement the operations that actually handle the page fault in lab2_3.\n" );
+      // 1. 分配一个新的物理页
+      void *pa = alloc_page();
+      if (pa == 0) {
+          panic("Out of memory during stack expansion!");
+      }
+      
+      // 将新分配的页清零（防止泄漏旧数据）
+      memset(pa, 0, PGSIZE);
+
+      // 2. 将发生缺页的虚拟地址 stval 向下对齐到页边界
+      // 因为映射必须以页（4KB）为单位。例如故障地址是 0x...ff8，我们需要映射 0x...000 开始的一整页
+      uint64 va = ROUNDDOWN(stval, PGSIZE);
+
+      // 3. 建立映射
+      // 使用 current->pagetable（当前进程页表）
+      // 权限需要是 可读(PROT_READ) | 可写(PROT_WRITE)，并且用户可访问(user=1)
+      user_vm_map((pagetable_t)current->pagetable, va, PGSIZE, (uint64)pa,
+             prot_to_type(PROT_WRITE | PROT_READ, 1));
 
       break;
+      }
     default:
       sprint("unknown page fault.\n");
       break;
