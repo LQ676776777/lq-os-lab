@@ -16,6 +16,8 @@
 
 #include "spike_interface/spike_utils.h"
 
+extern process procs[NPROC];
+
 //
 // implement the SYS_user_print syscall
 //
@@ -31,13 +33,15 @@ ssize_t sys_user_print(const char* buf, size_t n) {
 //
 // implement the SYS_user_exit syscall
 //
-ssize_t sys_user_exit(uint64 code) {
+ssize_t sys_user_exit(uint64 code)
+{
   sprint("User exit with code:%d.\n", code);
   // reclaim the current process, and reschedule. added @lab3_1
-  free_process( current );
+  free_process(current);
+  wake_up(current);
   schedule();
   return 0;
-}
+} 
 
 //
 // maybe, the simplest implementation of malloc in the world ... added @lab2_2
@@ -99,6 +103,27 @@ ssize_t sys_user_yield() {
   return 0;
 }
 
+
+//lab3_challenge1
+
+ssize_t sys_user_wait(uint64 pid)
+{
+
+  while(1) 
+  {
+      int ret = do_wait(pid);
+      if (ret != 0)
+      {
+
+        return ret;
+      }
+
+      insert_to_wait_queue(current);
+      schedule();
+  }
+}
+
+
 //
 // [a0]: the syscall number; [a1] ... [a7]: arguments to the syscalls.
 // returns the code of success, (e.g., 0 means success, fail for otherwise)
@@ -118,6 +143,8 @@ long do_syscall(long a0, long a1, long a2, long a3, long a4, long a5, long a6, l
       return sys_user_fork();
     case SYS_user_yield:
       return sys_user_yield();
+    case SYS_user_wait:
+      return sys_user_wait(a1);
     default:
       panic("Unknown syscall %ld \n", a0);
   }
