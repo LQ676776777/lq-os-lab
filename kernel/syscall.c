@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <errno.h>
 
+#include "riscv.h"
 #include "util/types.h"
 #include "syscall.h"
 #include "string.h"
