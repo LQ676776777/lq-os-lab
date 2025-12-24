@@ -28,7 +28,6 @@ ssize_t sys_user_print(const char* buf, size_t n) {
 ssize_t sys_user_exit(uint64 code) {
   sprint("User exit with code:%d.\n", code);
   // in lab1, PKE considers only one app (one process). 
-  // therefore, shutdown the system when the app calls exit()
   shutdown(code);
 }
 
