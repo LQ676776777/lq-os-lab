@@ -221,3 +221,31 @@ int do_link(char *oldpath, char *newpath) {
 int do_unlink(char *path) {
   return vfs_unlink(path);
 }
+
+
+// 获取当前工作目录的绝对路径
+int do_read_cwd(char *buf) {
+char temp[MAX_PATH_LEN];
+  get_path_string(temp, current->pfiles->cwd);
+  
+  if (strlen(temp) <= strlen(H_ROOT_DIR)) {
+    strcpy(buf, "/");
+  } else {
+    strcpy(buf, temp + strlen(H_ROOT_DIR));
+  }
+  return 0;
+}
+
+// 切换当前工作目录
+int do_change_cwd(char *path) {
+  struct dentry *parent = (path[0] == '/') ? vfs_root_dentry : current->pfiles->cwd;
+  
+  char miss_name[MAX_PATH_LEN];
+  struct dentry *new_cwd = lookup_final_dentry(path, &parent, miss_name);
+  
+  if (new_cwd && new_cwd->dentry_inode->type == DIR_I) {
+    current->pfiles->cwd = new_cwd;
+    return 0;
+  }
+  return -1;
+}
