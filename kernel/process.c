@@ -18,64 +18,33 @@
 #include "sched.h"
 #include "spike_interface/spike_utils.h"
 
-//Two functions defined in kernel/usertrap.S
+
 extern char smode_trap_vector[];
 extern void return_to_user(trapframe *, uint64 satp);
-
-// trap_sec_start points to the beginning of S-mode trap segment (i.e., the entry point
-// of S-mode trap vector).
 extern char trap_sec_start[];
-
-// process pool. added @lab3_1
 process procs[NPROC];
-
-// current points to the currently running user-mode application.
 process* current = NULL;
 
-//
-// switch to a user-mode process
-//
 void switch_to(process* proc) {
+
   assert(proc);
   current = proc;
-
-  // write the smode_trap_vector (64-bit func. address) defined in kernel/strap_vector.S
-  // to the stvec privilege register, such that trap handler pointed by smode_trap_vector
-  // will be triggered when an interrupt occurs in S mode.
   write_csr(stvec, (uint64)smode_trap_vector);
-
-  // set up trapframe values (in process structure) that smode_trap_vector will need when
-  // the process next re-enters the kernel.
-  proc->trapframe->kernel_sp = proc->kstack;      // process's kernel stack
-  proc->trapframe->kernel_satp = read_csr(satp);  // kernel page table
+  proc->trapframe->kernel_sp = proc->kstack;      
+  proc->trapframe->kernel_satp = read_csr(satp);  
   proc->trapframe->kernel_trap = (uint64)smode_trap_handler;
-
-  // SSTATUS_SPP and SSTATUS_SPIE are defined in kernel/riscv.h
-  // set S Previous Privilege mode (the SSTATUS_SPP bit in sstatus register) to User mode.
   unsigned long x = read_csr(sstatus);
-  x &= ~SSTATUS_SPP;  // clear SPP to 0 for user mode
-  x |= SSTATUS_SPIE;  // enable interrupts in user mode
-
-  // write x back to 'sstatus' register to enable interrupts, and sret destination mode.
+  x &= ~SSTATUS_SPP;  
+  x |= SSTATUS_SPIE;  
   write_csr(sstatus, x);
-
-  // set S Exception Program Counter (sepc register) to the elf entry pc.
   write_csr(sepc, proc->trapframe->epc);
-
-  // make user page table. macro MAKE_SATP is defined in kernel/riscv.h. added @lab2_1
   uint64 user_satp = MAKE_SATP(proc->pagetable);
-
-  // return_to_user() is defined in kernel/strap_vector.S. switch to user mode with sret.
-  // note, return_to_user takes two parameters @ and after lab2_1.
   return_to_user(proc->trapframe, user_satp);
 }
 
-//
-// initialize process pool (the procs[] array). added @lab3_1
-//
 void init_proc_pool() {
-  memset( procs, 0, sizeof(process)*NPROC );
 
+  memset( procs, 0, sizeof(process)*NPROC );
   for (int i = 0; i < NPROC; ++i) {
     procs[i].status = FREE;
     procs[i].pid = i;
@@ -155,165 +124,132 @@ process* alloc_process() {
   return &procs[i];
 }
 
-//
-// reclaim a process. added @lab3_1
-//
-int free_process( process* proc ) {
-  // we set the status to ZOMBIE, but cannot destruct its vm space immediately.
-  // since proc can be current process, and its user kernel stack is currently in use!
-  // but for proxy kernel, it (memory leaking) may NOT be a really serious issue,
-  // as it is different from regular OS, which needs to run 7x24.
-  proc->status = ZOMBIE;
 
+int free_process( process* proc ) {
+
+  proc->status = ZOMBIE;
   return 0;
 }
 
 
+int do_wait(int pid) {
+    int target_pid = -1; // 默认返回值
 
-int do_wait(int pid)
-{
-  if (pid == -1)
-  {
-    for (int i = 0; i < NPROC; i++)
-    {
-      if (procs[i].parent == current && procs[i].status == ZOMBIE)
-      {
-        procs[i].status = FREE;
-        return i;
-      }
+    // 遍历所有进程寻找子进程
+    for (int i = 0; i < NPROC; i++) {
+        // 如果不是当前进程的子进程，或者是未使用的槽位，直接跳过
+        if (procs[i].parent != current || procs[i].status == FREE) {
+            continue;
+        }
+
+        // 如果指定了特定 PID 且不匹配，跳过
+        if (pid != -1 && procs[i].pid != pid) {
+            continue;
+        }
+
+        // 找到了符合条件的子进程
+        
+        // 只有当它是 ZOMBIE 时我们才回收
+        if (procs[i].status == ZOMBIE) {
+            target_pid = procs[i].pid;
+            procs[i].status = FREE;
+            procs[i].parent = NULL; // 断绝父子关系
+            return target_pid;     // 成功回收，返回 PID
+        } else {
+            // 找到了子进程但它还没死，标记一下我们至少找到了一个
+            if (target_pid == -1) target_pid = 0; 
+        }
     }
-    return 0;
-  }
-  else if (pid < NPROC)
-  {
-    if (procs[pid].parent != current)
-    {
-      return -1;
-    }
-    else if (procs[pid].status == ZOMBIE)
-    {
-      procs[pid].status = FREE;
-      return pid;
-    }
-    else
-    {
-      return 0;
-    }
-  }
-  else
-  {
-    return -1;
-  }
+    
+    return target_pid;
 }
 
-
-//
-// implements fork syscal in kernel. added @lab3_1
-// basic idea here is to first allocate an empty process (child), then duplicate the
-// context and data segments of parent process to the child, and lastly, map other
-// segments (code, system) of the parent to child. the stack segment remains unchanged
-// for the child.
-//
-int do_fork(process *parent)
-{
+int do_fork(process *parent) {
   sprint("will fork a child from parent %d.\n", parent->pid);
   process *child = alloc_process();
 
-  for (int i = 0; i < parent->total_mapped_region; i++)
-  {
-    // browse parent's vm space, and copy its trapframe and data segments,
-    // map its code segment.
-    switch (parent->mapped_info[i].seg_type)
-    {
+  for (int i = 0; i < parent->total_mapped_region; i++) {
+    // 提取段信息，使代码更易读
+    mapped_region *region = &parent->mapped_info[i];
+    
+    switch (region->seg_type) {
     case CONTEXT_SEGMENT:
-    {
       *child->trapframe = *parent->trapframe;
       break;
-    }
+      
     case STACK_SEGMENT:
-    {
       memcpy((void *)lookup_pa(child->pagetable, child->mapped_info[STACK_SEGMENT].va),
-             (void *)lookup_pa(parent->pagetable, parent->mapped_info[i].va), PGSIZE);
+             (void *)lookup_pa(parent->pagetable, region->va), PGSIZE);
       break;
-    }
-    case HEAP_SEGMENT:
-      // build a same heap for child process.
+      
+    case HEAP_SEGMENT: {
 
-      // convert free_pages_address into a filter to skip reclaimed blocks in the heap
-      // when mapping the heap blocks
-      {
         int free_block_filter[MAX_HEAP_PAGES];
         memset(free_block_filter, 0, MAX_HEAP_PAGES);
         uint64 heap_bottom = parent->user_heap.heap_bottom;
-        for (int i = 0; i < parent->user_heap.free_pages_count; i++)
-        {
-          int index = (parent->user_heap.free_pages_address[i] - heap_bottom) / PGSIZE;
+        for (int k = 0; k < parent->user_heap.free_pages_count; k++) {
+          int index = (parent->user_heap.free_pages_address[k] - heap_bottom) / PGSIZE;
           free_block_filter[index] = 1;
         }
-
-        // copy and map the heap blocks
         for (uint64 heap_block = current->user_heap.heap_bottom;
-             heap_block < current->user_heap.heap_top; heap_block += PGSIZE)
-        {
-          if (free_block_filter[(heap_block - heap_bottom) / PGSIZE]) // skip free blocks
-            continue;
-
+             heap_block < current->user_heap.heap_top; heap_block += PGSIZE) {
+          if (free_block_filter[(heap_block - heap_bottom) / PGSIZE]) continue;
           void *child_pa = alloc_page();
           memcpy(child_pa, (void *)lookup_pa(parent->pagetable, heap_block), PGSIZE);
           user_vm_map((pagetable_t)child->pagetable, heap_block, PGSIZE, (uint64)child_pa,
                       prot_to_type(PROT_WRITE | PROT_READ, 1));
         }
-      }
+        child->mapped_info[HEAP_SEGMENT].npages = region->npages;
+        memcpy((void *)&child->user_heap, (void *)&parent->user_heap, sizeof(parent->user_heap));
+        break;
+    }
+    
+    case CODE_SEGMENT: {
+    
+        uint64 vaddr = region->va;
+        // 直接从父进程页表查找物理地址
+        uint64 paddr = lookup_pa(parent->pagetable, vaddr);
+        
+        // 映射到子进程，权限设为 R|X (以及User位)
+        map_pages(child->pagetable, vaddr, PGSIZE, paddr, prot_to_type(PROT_EXEC | PROT_READ, 1));
 
-      child->mapped_info[HEAP_SEGMENT].npages = parent->mapped_info[HEAP_SEGMENT].npages;
-
-      // copy the heap manager from parent to child
-      memcpy((void *)&child->user_heap, (void *)&parent->user_heap, sizeof(parent->user_heap));
-      break;
-    case CODE_SEGMENT:
-      // TODO (lab3_1): implment the mapping of child code segment to parent's
-      // code segment.
-      // hint: the virtual address mapping of code segment is tracked in mapped_info
-      // page of parent's process structure. use the information in mapped_info to
-      // retrieve the virtual to physical mapping of code segment.
-      // after having the mapping information, just map the corresponding virtual
-      // address region of child to the physical pages that actually store the code
-      // segment of parent process.
-      // DO NOT COPY THE PHYSICAL PAGES, JUST MAP THEM.
-      // panic( "You need to implement the code segment mapping of child in lab3_1.\n" );
-
-      {
-        uint64 va = parent->mapped_info[i].va, size = parent->mapped_info[i].npages * PGSIZE, pa = lookup_pa(parent->pagetable, parent->mapped_info[i].va);
-        int perm = prot_to_type(PROT_EXEC | PROT_READ, 1);
-        map_pages(child->pagetable, va, size, pa, perm);
-
-        // after mapping, register the vm region (do not delete codes below!)
-        child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
-        child->mapped_info[child->total_mapped_region].npages =
-            parent->mapped_info[i].npages;
-        child->mapped_info[child->total_mapped_region].seg_type = CODE_SEGMENT;
+        // 注册映射信息
+        int idx = child->total_mapped_region;
+        child->mapped_info[idx].va = vaddr;
+        child->mapped_info[idx].npages = region->npages;
+        child->mapped_info[idx].seg_type = CODE_SEGMENT;
         child->total_mapped_region++;
         break;
-      }
-    case DATA_SEGMENT:
-    {
-      int pages = parent->mapped_info[i].npages, pagenum = 0;
-      uint64 va = parent->mapped_info[i].va;
-      while (pagenum < pages)
-      {
-        char *newaddr = alloc_page();
-        memcpy(newaddr, (void *)lookup_pa(parent->pagetable, va + pagenum * PGSIZE), PGSIZE);
-        map_pages(child->pagetable, va + pagenum * PGSIZE, PGSIZE, (uint64)newaddr, prot_to_type(PROT_WRITE | PROT_READ, 1));
-        pagenum++;
-      }
+    }
+    
+    case DATA_SEGMENT: {
+ 
+        uint64 start_va = region->va;
+        uint32 page_cnt = region->npages;
+        
+        for (int page_idx = 0; page_idx < page_cnt; page_idx++) {
+            uint64 current_va = start_va + page_idx * PGSIZE;
+            
+            // 1. 分配新页
+            void* new_page_pa = alloc_page();
+            // 2. 找到父进程该页的物理地址
+            void* parent_page_pa = (void*)lookup_pa(parent->pagetable, current_va);
+            
+            // 3. 复制数据
+            memcpy(new_page_pa, parent_page_pa, PGSIZE);
+            
+            // 4. 建立映射
+            user_vm_map(child->pagetable, current_va, PGSIZE, (uint64)new_page_pa, 
+                        prot_to_type(PROT_WRITE | PROT_READ, 1));
+        }
 
-      // after mapping, register the vm region (do not delete codes below!)
-      child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
-      child->mapped_info[child->total_mapped_region].npages =
-          parent->mapped_info[i].npages;
-      child->mapped_info[child->total_mapped_region].seg_type = DATA_SEGMENT;
-      child->total_mapped_region++;
-      break;
+        // 更新子进程的 mapped_info
+        int idx = child->total_mapped_region;
+        child->mapped_info[idx].va = start_va;
+        child->mapped_info[idx].npages = page_cnt;
+        child->mapped_info[idx].seg_type = DATA_SEGMENT;
+        child->total_mapped_region++;
+        break;
     }
     }
   }

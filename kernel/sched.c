@@ -7,6 +7,9 @@
 
 process* ready_queue_head = NULL;
 process *wait_queue_head = NULL;
+
+extern process procs[NPROC];
+
 //
 // insert a process, proc, into the END of ready queue.
 //
@@ -35,70 +38,74 @@ void insert_to_ready_queue( process* proc ) {
   return;
 }
 
-
 void insert_to_wait_queue(process *proc)
 {
+
+  proc->status = BLOCKED;
+  proc->queue_next = NULL;
+
   if (wait_queue_head == NULL)
   {
-    proc->status = BLOCKED;
-    proc->queue_next = NULL;
     wait_queue_head = proc;
     return;
   }
+  
   // wait queue is not empty
-  process *p;
-  // browse the wait queue to see if proc is already in-queue
-  for (p = wait_queue_head; p->queue_next != NULL; p = p->queue_next)
-    if (p == proc)
-      return; // already in queue
-
-  // p points to the last element of the wait queue
-  if (p == proc)
-    return;
-
-  p->queue_next = proc;
-  proc->status = BLOCKED;
-  proc->queue_next = NULL;
+  process *ptr = wait_queue_head;
+  // 遍历到队尾
+  while (ptr->queue_next != NULL) {
+      if (ptr == proc) return; // already in queue
+      ptr = ptr->queue_next;
+  }
+  
+  if (ptr == proc) return;
+  ptr->queue_next = proc;
   return;
 }
 
-void wake_up(process *proc)
+
+void wake_up(process *curr_proc)
 {
-  process *wakeup = NULL;
-  process *p;
   if (wait_queue_head == NULL)
   {
     return;
   }
-  else if (wait_queue_head == proc->parent)
+
+  process *parent = curr_proc->parent;
+  
+  // Case 1: 队头就是要唤醒的父进程
+  if (wait_queue_head == parent)
   {
-    wakeup = wait_queue_head;
-    wakeup->status = READY;
+    process *target = wait_queue_head;
     wait_queue_head = wait_queue_head->queue_next;
-    insert_to_ready_queue(wakeup);
+    
+    target->status = READY;
+    insert_to_ready_queue(target);
     return;
   }
-  for (p = wait_queue_head; p->queue_next != NULL; p = p->queue_next)
+  
+  // Case 2: 遍历队列查找父进程
+  process *prev = wait_queue_head;
+  while (prev->queue_next != NULL)
   {
-    if (p->queue_next == proc->parent)
+    if (prev->queue_next == parent)
     {
-      wakeup = p->queue_next;
-      wakeup->status = READY;
-      p->queue_next = p->queue_next->queue_next;
-      insert_to_ready_queue(wakeup);
+      process *target = prev->queue_next;
+      // 从等待队列移除
+      prev->queue_next = target->queue_next;
+      
+      // 加入就绪队列
+      target->status = READY;
+      insert_to_ready_queue(target);
       return;
     }
+    prev = prev->queue_next;
   }
 }
 
-
 //
 // choose a proc from the ready queue, and put it to run.
-// note: schedule() does not take care of previous current process. If the current
-// process is still runnable, you should place it into the ready queue (by calling
-// ready_queue_insert), and then call schedule().
 //
-extern process procs[NPROC];
 void schedule() {
   if ( !ready_queue_head ){
     // by default, if there are no ready process, and all processes are in the status of
