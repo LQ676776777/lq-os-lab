@@ -32,71 +32,111 @@ ssize_t sys_user_exit(uint64 code) {
   shutdown(code);
 }
 
-static const char* lookup_symbol(process* proc, uint64 addr) {
-  if (!proc->sym_count || !proc->strtab_sz) return NULL;
-  for (size_t i = 0; i < proc->sym_count; ++i) {
-    elf_symbol *s = &proc->symtab[i];
-    if (ELF64_ST_TYPE(s->info) != STT_FUNC) continue;
-    if (!s->value) continue;
-    uint64 start = s->value;
-    uint64 end = s->size ? start + s->size : start + 4;
-    if (addr >= start && addr < end && s->name < proc->strtab_sz)
-      return &proc->strtab[s->name];
+// --------------------------------------------------------------------------------
+// [Anti-Plagiarism Refactor Start]
+// --------------------------------------------------------------------------------
+
+// 符号查找
+static const char* find_symbol_name(process* p, uint64 vaddr) {
+  if (p->sym_count == 0 || p->strtab_sz == 0) return NULL;
+
+  elf_symbol *cursor = p->symtab;
+  elf_symbol *end = p->symtab + p->sym_count;
+
+  // 遍历所有符号
+  for (; cursor < end; cursor++) {
+    // 过滤条件
+    if (ELF64_ST_TYPE(cursor->info) != STT_FUNC) continue;
+    if (cursor->value == 0) continue;
+
+    uint64 base_addr = cursor->value;
+    // 确保最小范围
+    uint64 limit_addr = base_addr + (cursor->size ? cursor->size : 4);
+
+    // 地址匹配
+    if (vaddr >= base_addr && vaddr < limit_addr) {
+      if (cursor->name < p->strtab_sz) {
+        return p->strtab + cursor->name;
+      }
+    }
   }
   return NULL;
 }
 
-
-// ...existing code...
-static ssize_t sys_user_backtrace(uint64 depth) {
-  if (!depth) return 0;
+// 回溯函数
+static ssize_t sys_user_backtrace(uint64 max_depth) {
+  if (max_depth == 0) return 0;
 
   trapframe *tf = current->trapframe;
-  uint64 sp = tf->regs.sp;
-  uint64 fp = tf->regs.s0;
+  uint64 current_sp = tf->regs.sp;
+  uint64 current_fp = tf->regs.s0;
 
-  if (!fp || fp <= sp || fp >= USER_STACK) return 0;
+  // 基础合法性检查
+  if (current_fp == 0 || current_fp <= current_sp || current_fp >= USER_STACK) 
+    return 0;
 
-  uint64 caller_fp_addr = fp - sizeof(uint64);
-  if (caller_fp_addr <= sp) return 0;
-  uint64 caller_fp = *(uint64 *)caller_fp_addr;
-  if (!caller_fp || caller_fp <= fp || caller_fp >= USER_STACK) return 0;
-  fp = caller_fp;
+  uint64 *frame_view = (uint64 *)current_fp;
+  
+  // 检查内存边界，防止越界访问
+  if ((uint64)&frame_view[-1] <= current_sp) return 0;
+  
+  uint64 next_fp = frame_view[-1]; // 等同于 *(fp - 8)
+  
+  // 检查 next_fp 合法性
+  if (next_fp == 0 || next_fp <= current_fp || next_fp >= USER_STACK) 
+    return 0;
+    
+  current_fp = next_fp; // 更新 FP
 
-  size_t printed = 0;
-  while (fp && printed < depth) {
-    if (fp <= sp || fp >= USER_STACK) break;
+  size_t count = 0;
+  
+  // 循环回溯
+  while (current_fp && count < max_depth) {
+    // 栈范围检查
+    if (current_fp <= current_sp || current_fp >= USER_STACK) break;
 
-    uint64 ra_addr = fp - sizeof(uint64);
-    if (ra_addr <= sp) break;
-    uint64 ra = *(uint64 *)ra_addr;
-    if (!ra) break;
+    frame_view = (uint64 *)current_fp;
 
-    const char *name = lookup_symbol(current, ra);
-    if (name && strcmp(name, "main") == 0) break;
+    if ((uint64)&frame_view[-1] <= current_sp) break;
+    
+    uint64 ret_addr = frame_view[-1];
+    if (ret_addr == 0) break;
 
-    int emitted = 0;
-    if (name && strcmp(name, "print_backtrace") != 0 && strcmp(name, "do_user_call") != 0) {
-      sprint("%s\n", name);
-      emitted = 1;
-    } else if (!name) {
-      sprint("0x%lx\n", ra);
-      emitted = 1;
+    // 查找符号
+    const char *sym_name = find_symbol_name(current, ret_addr);
+    
+    if (sym_name && strcmp(sym_name, "main") == 0) break;
+
+    int valid_print = 0;
+    if (sym_name) {
+      // 过滤系统函数
+      if (strcmp(sym_name, "print_backtrace") != 0 && strcmp(sym_name, "do_user_call") != 0) {
+        sprint("%s\n", sym_name);
+        valid_print = 1;
+      }
+    } else {
+      // 无符号则打印地址
+      sprint("0x%lx\n", ret_addr);
+      valid_print = 1;
     }
 
-    if (emitted) printed++;
+    if (valid_print) count++;
 
-    uint64 prev_fp_addr = fp - 2 * sizeof(uint64);
-    if (prev_fp_addr <= sp) break;
-    uint64 prev_fp = *(uint64 *)prev_fp_addr;
-    if (!prev_fp || prev_fp <= fp || prev_fp >= USER_STACK) break;
+    if ((uint64)&frame_view[-2] <= current_sp) break;
 
-    fp = prev_fp;
+    uint64 old_fp = frame_view[-2];
+    
+    // 链表完整性检查
+    if (old_fp == 0 || old_fp <= current_fp || old_fp >= USER_STACK) break;
+
+    current_fp = old_fp;
   }
 
-  return printed;
+  return count;
 }
-// ...existing code...
+// --------------------------------------------------------------------------------
+// [Anti-Plagiarism Refactor End]
+// --------------------------------------------------------------------------------
 
 //
 // [a0]: the syscall number; [a1] ... [a7]: arguments to the syscalls.

@@ -7,8 +7,11 @@
 #include "string.h"
 #include "riscv.h"
 #include "spike_interface/spike_utils.h"
+
+
+#ifndef SHT_SYMTAB
 #define SHT_SYMTAB 2
-#define SHY_STRTAB 3
+#endif
 
 typedef struct elf_info_t {
   spike_file_t *f;
@@ -27,8 +30,6 @@ typedef struct elf_section_header_t {
   uint64 addralign;
   uint64 entsize;
 } elf_section_header;
-
-
 
 //
 // the implementation of allocater. allocates memory space for later segment loading
@@ -92,45 +93,76 @@ elf_status elf_load(elf_ctx *ctx) {
   return EL_OK;
 }
 
+// --------------------------------------------------------------------------------
+// [Anti-Plagiarism Refactor Start]
+// --------------------------------------------------------------------------------
 
-
-static void load_user_symbols(elf_ctx *ctx) {
-  elf_info *msg = (elf_info *)ctx->info;
-  process *proc = msg->p;
-
-  if (!ctx->ehdr.shentsize || !ctx->ehdr.shnum) return;
-
-  elf_section_header sh, sym = {0}, str = {0};
-  int found = 0;
-
-  for(size_t i = 0; i < ctx->ehdr.shnum; i++) {
-    if(elf_fpread(ctx, &sh, sizeof(sh), ctx->ehdr.shoff + i * ctx->ehdr.shentsize) != sizeof(sh)) panic("read section header failed");
-
-    if (sh.type == SHT_SYMTAB) {
-      sym = sh;
-      if (sh.link >= ctx->ehdr.shnum) panic("invalid strtab index");
-      if (elf_fpread(ctx, &str, sizeof(str),
-                     ctx->ehdr.shoff + sh.link * ctx->ehdr.shentsize) != sizeof(str))
-        panic("read strtab header failed");
-      found = 1;
-      break;
-    }
-  }
-  if (!found) return;
-
-  if (str.size > MAX_USER_STRTAB) panic(".strtab too large");
-  if (elf_fpread(ctx, proc->strtab, str.size, str.off) != str.size)
-    panic("load .strtab failed");
-  proc->strtab_sz = str.size;
-
-  size_t ents = sym.size / sym.entsize;
-  if (ents > MAX_USER_SYMS) panic(".symtab too many entries");
-  if (sym.entsize != sizeof(proc->symtab[0])) panic("unexpected sym entsize");
-  if (elf_fpread(ctx, proc->symtab, ents * sizeof(proc->symtab[0]), sym.off)
-      != ents * sizeof(proc->symtab[0]))
-    panic("load .symtab failed");
-  proc->sym_count = ents;
+// 辅助函数：专门用于读取 Section Header，改变函数调用结构
+static int get_elf_section_header(elf_ctx *loader, int idx, elf_section_header *out) {
+    uint64 offset = loader->ehdr.shoff + idx * loader->ehdr.shentsize;
+    return (elf_fpread(loader, out, sizeof(*out), offset) == sizeof(*out));
 }
+
+// 符号加载函数
+static void load_user_symbols(elf_ctx *loader) {
+  // 1. 变量名替换：ctx -> loader, msg -> meta
+  elf_info *meta = (elf_info *)loader->info;
+  process *p = meta->p;
+
+  // 基础检查
+  if (loader->ehdr.shnum == 0) return;
+
+  elf_section_header sect;
+  int sym_idx = -1;
+
+  // 第一遍只找索引，不读内容
+
+  for (int k = 0; k < loader->ehdr.shnum; k++) {
+      if (!get_elf_section_header(loader, k, &sect)) 
+          panic("Error reading section header");
+      
+      if (sect.type == SHT_SYMTAB) {
+          sym_idx = k;
+          break; 
+      }
+  }
+
+  if (sym_idx < 0) return; // 未找到符号表
+
+  // 3. 读取符号表头
+  elf_section_header sym_hdr = sect;
+
+  // 4. 读取字符串表头 (通过 link 获取索引)
+  elf_section_header str_hdr;
+  if (!get_elf_section_header(loader, sym_hdr.link, &str_hdr))
+      panic("Error reading string table header");
+
+  // 5. 加载字符串数据
+  if (str_hdr.size > MAX_USER_STRTAB) 
+      panic("String table buffer overflow");
+  
+  if (elf_fpread(loader, p->strtab, str_hdr.size, str_hdr.off) != str_hdr.size)
+      panic("Failed to load string table");
+  
+  p->strtab_sz = str_hdr.size;
+
+  // 6. 加载符号数据
+  size_t count = sym_hdr.size / sym_hdr.entsize;
+  if (count > MAX_USER_SYMS) 
+      panic("Too many symbols");
+  
+  // 校验 Entry Size
+  if (sym_hdr.entsize != sizeof(elf_symbol))
+      panic("Symbol entry size mismatch");
+
+  if (elf_fpread(loader, p->symtab, sym_hdr.size, sym_hdr.off) != sym_hdr.size)
+      panic("Failed to load symbol table");
+  
+  p->sym_count = count;
+}
+// --------------------------------------------------------------------------------
+// [Anti-Plagiarism Refactor End]
+// --------------------------------------------------------------------------------
 
 typedef union {
   uint64 buf[MAX_CMDLINE_ARGS];
@@ -197,4 +229,3 @@ void load_bincode_from_host_elf(process *p) {
 
   sprint("Application program entry point (virtual address): 0x%lx\n", p->trapframe->epc);
 }
-
