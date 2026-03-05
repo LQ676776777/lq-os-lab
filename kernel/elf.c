@@ -6,6 +6,7 @@
 #include "elf.h"
 #include "string.h"
 #include "riscv.h"
+
 #include "spike_interface/spike_utils.h"
 
 typedef struct elf_info_t {
@@ -280,8 +281,43 @@ void load_bincode_from_host_elf(process *p) {
   // entry (virtual, also physical in lab1_x) address
   p->trapframe->epc = elfloader.ehdr.entry;
 
+  // ---- lab1_challenge2: read .debug_line section ----
+  elf_header *ehdr = &elfloader.ehdr;
+
+  // step 1: read section header string table (.shstrtab) section header
+  elf_sect_header shstrtab_hdr;
+  uint64 shstrtab_off = ehdr->shoff + (uint64)ehdr->shstrndx * ehdr->shentsize;
+  elf_fpread(&elfloader, &shstrtab_hdr, sizeof(shstrtab_hdr), shstrtab_off);
+
+  // step 2: read the .shstrtab content into a temporary buffer
+  char shstrtab[512];
+  if (shstrtab_hdr.size > sizeof(shstrtab))
+    panic("shstrtab too large!\n");
+  elf_fpread(&elfloader, shstrtab, shstrtab_hdr.size, shstrtab_hdr.offset);
+
+  // step 3: iterate all section headers, find .debug_line
+  elf_sect_header sh;
+  char *debug_line_buf = (char *)0x81400000;
+  uint64 debug_line_size = 0;
+  for (int i = 0; i < ehdr->shnum; i++) {
+    uint64 sh_off = ehdr->shoff + (uint64)i * ehdr->shentsize;
+    elf_fpread(&elfloader, &sh, sizeof(sh), sh_off);
+    // compare section name
+    if (strcmp(shstrtab + sh.name, ".debug_line") == 0) {
+      debug_line_size = sh.size;
+      elf_fpread(&elfloader, debug_line_buf, debug_line_size, sh.offset);
+      break;
+    }
+  }
+
+  // step 4: parse .debug_line if found
+  if (debug_line_size > 0) {
+    make_addr_line(&elfloader, debug_line_buf, debug_line_size);
+  }
+
   // close the host spike file
   spike_file_close( info.f );
 
   sprint("Application program entry point (virtual address): 0x%lx\n", p->trapframe->epc);
 }
+

@@ -1,5 +1,6 @@
 #include "kernel/riscv.h"
 #include "kernel/process.h"
+#include "kernel/strap.h"
 #include "spike_interface/spike_utils.h"
 
 static void handle_instruction_access_fault() { panic("Instruction access fault!"); }
@@ -8,7 +9,11 @@ static void handle_load_access_fault() { panic("Load access fault!"); }
 
 static void handle_store_access_fault() { panic("Store/AMO access fault!"); }
 
-static void handle_illegal_instruction() { panic("Illegal instruction!"); }
+static void handle_illegal_instruction() {
+  // lab1_challenge2: print error line info before panicking
+  print_errorline(read_csr(mepc));
+  panic("Illegal instruction!");
+}
 
 static void handle_misaligned_load() { panic("Misaligned Load!"); }
 
