@@ -31,6 +31,11 @@ smode_trap_vector:
     csrr t0, sscratch
     sd t0, 72(a0)
 
+    # restore tp to the kernel's hartid from trapframe->hartid (offset 272).
+    # This is critical for multi-core: restore_all_registers overwrites tp with the
+    # user's value (0), so we must restore the kernel's hartid here.
+    ld tp, 272(a0)
+
     # use the "user kernel" stack (whose pointer stored in p->trapframe->kernel_sp)
     ld sp, 248(a0)
 

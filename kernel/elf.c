@@ -27,8 +27,6 @@ static void *elf_alloc_mb(elf_ctx *ctx, uint64 elf_pa, uint64 elf_va, uint64 siz
 static uint64 elf_fpread(elf_ctx *ctx, void *dest, uint64 nb, uint64 offset) {
   elf_info *msg = (elf_info *)ctx->info;
   // call spike file utility to load the content of elf file into memory.
-  // spike_file_pread will read the elf file (msg->f) from offset to memory (indicated by
-  // *dest) for nb bytes.
   return spike_file_pread(msg->f, dest, nb, offset);
 }
 
@@ -93,7 +91,7 @@ static size_t parse_args(arg_buf *arg_bug_msg) {
   size_t pk_argc = arg_bug_msg->buf[0];
   uint64 *pk_argv = &arg_bug_msg->buf[1];
 
-  int arg = 1;  // skip the PKE OS kernel string, leave behind only the application name
+  int arg = 1;  // skip the PKE OS kernel string, leave behind only the application names
   for (size_t i = 0; arg + i < pk_argc; i++)
     arg_bug_msg->argv[i] = (char *)(uintptr_t)pk_argv[arg + i];
 
@@ -103,22 +101,28 @@ static size_t parse_args(arg_buf *arg_bug_msg) {
 
 //
 // load the elf of user application, by using the spike file interface.
+// In multi-core mode, each hart loads its own app based on hartid.
 //
 void load_bincode_from_host_elf(process *p) {
   arg_buf arg_bug_msg;
 
-  // retrieve command line arguements
+  // retrieve command line arguments
   size_t argc = parse_args(&arg_bug_msg);
   if (!argc) panic("You need to specify the application program!\n");
 
-  sprint("hartid = ?: Application: %s\n", arg_bug_msg.argv[0]);
+  // each hart loads its corresponding app: hart0 -> argv[0], hart1 -> argv[1]
+  int hart = read_tp();
+  if (hart >= (int)argc)
+    panic("Not enough application programs for all harts!\n");
+
+  sprint("hartid = %d: Application: %s\n", hart, arg_bug_msg.argv[hart]);
 
   //elf loading. elf_ctx is defined in kernel/elf.h, used to track the loading process.
   elf_ctx elfloader;
   // elf_info is defined above, used to tie the elf file and its corresponding process.
   elf_info info;
 
-  info.f = spike_file_open(arg_bug_msg.argv[0], O_RDONLY, 0);
+  info.f = spike_file_open(arg_bug_msg.argv[hart], O_RDONLY, 0);
   info.p = p;
   // IS_ERR_VALUE is a macro defined in spike_interface/spike_htif.h
   if (IS_ERR_VALUE(info.f)) panic("Fail on openning the input application program.\n");
@@ -136,5 +140,6 @@ void load_bincode_from_host_elf(process *p) {
   // close the host spike file
   spike_file_close( info.f );
 
-  sprint("hartid = ?: Application program entry point (virtual address): 0x%lx\n", p->trapframe->epc);
+  sprint("hartid = %d: Application program entry point (virtual address): 0x%lx\n",
+         hart, p->trapframe->epc);
 }

@@ -13,6 +13,8 @@ typedef struct trapframe_t {
   /* offset:256 */ uint64 kernel_trap;
   // saved user process counter
   /* offset:264 */ uint64 epc;
+  // hartid of the hart running this process (for restoring tp on trap entry)
+  /* offset:272 */ uint64 hartid;
 }trapframe;
 
 // the extremely simple definition of process, used for begining labs of PKE
@@ -23,8 +25,12 @@ typedef struct process_t {
   trapframe* trapframe;
 }process;
 
+// the hartid of the current hart
+static inline int hart_id() { return read_tp(); }
+
 void switch_to(process*);
 
-extern process* current;
+// per-hart current process pointer
+extern process* current[];
 
 #endif
