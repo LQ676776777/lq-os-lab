@@ -2,6 +2,7 @@
 #define _PROC_H_
 
 #include "riscv.h"
+#include "config.h"
 
 typedef struct trapframe_t {
   // space to store context (all common registers)
@@ -26,15 +27,14 @@ typedef struct process_t {
   pagetable_t pagetable;
   // trapframe storing the context of a (User mode) process.
   trapframe* trapframe;
+  // per-process free virtual address pointer for naive_malloc. added @lab2_challenge3
+  uint64 ufree_page;
 }process;
 
 // switch to run user app
 void switch_to(process*);
 
-// current running process
-extern process* current;
-
-// address of the first free page in our simple heap. added @lab2_2
-extern uint64 g_ufree_page;
+// current running process, per-hart
+extern process* current[NCPU];
 
 #endif

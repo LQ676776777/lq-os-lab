@@ -5,15 +5,13 @@
 #include "util/types.h"
 #include "kernel/riscv.h"
 #include "kernel/config.h"
+#include "kernel/sync_utils.h"
 #include "spike_interface/spike_utils.h"
 
 //
 // global variables are placed in the .data section.
 // stack0 is the privilege mode stack(s) of the proxy kernel on CPU(s)
 // allocates 4KB stack space for each processor (hart)
-//
-// NCPU is defined to be 1 in kernel/config.h, as we consider only one HART in basic
-// labs.
 //
 __attribute__((aligned(16))) char stack0[4096 * NCPU];
 
@@ -28,15 +26,15 @@ extern uint64 htif;
 extern uint64 g_mem_size;
 // struct riscv_regs is define in kernel/riscv.h, and g_itrframe is used to save
 // registers when interrupt hapens in M mode. added @lab1_2
-riscv_regs g_itrframe;
+// per-hart interrupt frame for multi-core
+riscv_regs g_itrframe[NCPU];
+
+// barrier counter for M-mode init sync
+static volatile int m_init_barrier = 0;
 
 //
 // get the information of HTIF (calling interface) and the emulated memory by
 // parsing the Device Tree Blog (DTB, actually DTS) stored in memory.
-//
-// the role of DTB is similar to that of Device Address Resolution Table (DART)
-// in Intel series CPUs. it records the details of devices and memory of the
-// platform simulated using Spike.
 //
 void init_dtb(uint64 dtb) {
   // defined in spike_interface/spike_htif.c, enabling Host-Target InterFace (HTIF)
@@ -91,21 +89,22 @@ void timerinit(uintptr_t hartid) {
 // m_start: machine mode C entry point.
 //
 void m_start(uintptr_t hartid, uintptr_t dtb) {
-  // init the spike file interface (stdin,stdout,stderr)
-  // functions with "spike_" prefix are all defined in codes under spike_interface/,
-  // sprint is also defined in spike_interface/spike_utils.c
-  spike_file_init();
+  // only hart0 initializes spike file interface and DTB
+  if (hartid == 0) {
+    spike_file_init();
+    init_dtb(dtb);
+  }
+
+  // wait for hart0 to finish DTB/HTIF init
+  sync_barrier(&m_init_barrier, NCPU);
+
   sprint("In m_start, hartid:%d\n", hartid);
 
-  // init HTIF (Host-Target InterFace) and memory by using the Device Table Blob (DTB)
-  // init_dtb() is defined above.
-  init_dtb(dtb);
-
-  // save the address of trap frame for interrupt in M mode to "mscratch". added @lab1_2
-  write_csr(mscratch, &g_itrframe);
+  // save the address of trap frame for interrupt in M mode to "mscratch".
+  // each hart uses its own interrupt frame
+  write_csr(mscratch, &g_itrframe[hartid]);
 
   // set previous privilege mode to S (Supervisor), and will enter S mode after 'mret'
-  // write_csr is a macro defined in kernel/riscv.h
   write_csr(mstatus, ((read_csr(mstatus) & ~MSTATUS_MPP_MASK) | MSTATUS_MPP_S));
 
   // set M Exception Program Counter to sstart, for mret (requires gcc -mcmodel=medany)
@@ -118,7 +117,6 @@ void m_start(uintptr_t hartid, uintptr_t dtb) {
   write_csr(mstatus, read_csr(mstatus) | MSTATUS_MIE);
 
   // delegate all interrupts and exceptions to supervisor mode.
-  // delegate_traps() is defined above.
   delegate_traps();
 
   // also enables interrupt handling in supervisor mode. added @lab1_3
