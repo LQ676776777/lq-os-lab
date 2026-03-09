@@ -76,3 +76,18 @@ int fork() {
 void yield() {
   do_user_call(SYS_user_yield, 0, 0, 0, 0, 0, 0, 0);
 }
+
+//
+// semaphore operations. added @lab3_challenge2
+//
+int sem_new(int value) {
+  return do_user_call(SYS_user_sem_new, value, 0, 0, 0, 0, 0, 0);
+}
+
+int sem_P(int sem_id) {
+  return do_user_call(SYS_user_sem_P, sem_id, 0, 0, 0, 0, 0, 0);
+}
+
+int sem_V(int sem_id) {
+  return do_user_call(SYS_user_sem_V, sem_id, 0, 0, 0, 0, 0, 0);
+}

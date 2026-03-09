@@ -17,6 +17,84 @@
 #include "spike_interface/spike_utils.h"
 
 //
+// semaphore implementation. added @lab3_challenge2
+//
+#define MAX_SEMAPHORES 16
+
+typedef struct semaphore_t {
+  int value;
+  int used;
+  process *wait_queue_head;
+} semaphore;
+
+semaphore semaphores[MAX_SEMAPHORES];
+
+//
+// allocate a new semaphore with the given initial value
+//
+int sys_user_sem_new(int value) {
+  for (int i = 0; i < MAX_SEMAPHORES; i++) {
+    if (!semaphores[i].used) {
+      semaphores[i].used = 1;
+      semaphores[i].value = value;
+      semaphores[i].wait_queue_head = NULL;
+      return i;
+    }
+  }
+  panic("no free semaphore available.\n");
+  return -1;
+}
+
+//
+// P (wait/down) operation on semaphore
+//
+int sys_user_sem_P(int sem_id) {
+  if (sem_id < 0 || sem_id >= MAX_SEMAPHORES || !semaphores[sem_id].used)
+    panic("invalid semaphore id in P operation.\n");
+
+  semaphore *sem = &semaphores[sem_id];
+  sem->value--;
+  if (sem->value < 0) {
+    // block current process and add to wait queue
+    current->status = BLOCKED;
+    // add to the tail of the semaphore's wait queue
+    if (sem->wait_queue_head == NULL) {
+      sem->wait_queue_head = current;
+      current->queue_next = NULL;
+    } else {
+      process *p = sem->wait_queue_head;
+      while (p->queue_next != NULL) p = p->queue_next;
+      p->queue_next = current;
+      current->queue_next = NULL;
+    }
+    schedule();
+  }
+  return 0;
+}
+
+//
+// V (signal/up) operation on semaphore
+//
+int sys_user_sem_V(int sem_id) {
+  if (sem_id < 0 || sem_id >= MAX_SEMAPHORES || !semaphores[sem_id].used)
+    panic("invalid semaphore id in V operation.\n");
+
+  semaphore *sem = &semaphores[sem_id];
+  sem->value++;
+  if (sem->value <= 0) {
+    // wake up the first process in wait queue
+    if (sem->wait_queue_head != NULL) {
+      process *wakeup = sem->wait_queue_head;
+      sem->wait_queue_head = wakeup->queue_next;
+      wakeup->queue_next = NULL;
+      wakeup->status = READY;
+      insert_to_ready_queue(wakeup);
+    }
+  }
+  return 0;
+}
+
+//
 // implement the SYS_user_print syscall
 //
 ssize_t sys_user_print(const char* buf, size_t n) {
@@ -118,6 +196,13 @@ long do_syscall(long a0, long a1, long a2, long a3, long a4, long a5, long a6, l
       return sys_user_fork();
     case SYS_user_yield:
       return sys_user_yield();
+    // added @lab3_challenge2
+    case SYS_user_sem_new:
+      return sys_user_sem_new(a1);
+    case SYS_user_sem_P:
+      return sys_user_sem_P(a1);
+    case SYS_user_sem_V:
+      return sys_user_sem_V(a1);
     default:
       panic("Unknown syscall %ld \n", a0);
   }

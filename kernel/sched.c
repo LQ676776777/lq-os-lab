@@ -59,7 +59,9 @@ void schedule() {
       sprint( "no more ready processes, system shutdown now.\n" );
       shutdown( 0 );
     }else{
-      panic( "Not handled: we should let system wait for unfinished processes.\n" );
+      // some processes are BLOCKED (e.g., waiting on semaphores), just return
+      // and let the timer interrupt eventually wake them up via V operations
+      return;
     }
   }
 

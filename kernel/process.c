@@ -257,6 +257,30 @@ int do_fork( process* parent)
         child->total_mapped_region++;
       }
         break;
+      case DATA_SEGMENT:{
+        // copy data segment from parent to child (independent copy, not shared mapping)
+        uint64 data_va = parent->mapped_info[i].va;
+        uint64 data_pa = lookup_pa(parent->pagetable, data_va);
+
+        // allocate a new physical page for child and copy data
+        void *child_data_pa = alloc_page();
+        memcpy(child_data_pa, (void *)data_pa, PGSIZE);
+
+        // map the new page into child's address space with read/write permission
+        user_vm_map(child->pagetable, data_va, PGSIZE, (uint64)child_data_pa,
+                    prot_to_type(PROT_WRITE | PROT_READ, 1));
+
+        sprint("do_fork copy data segment at pa:%lx of parent to child at va:%lx.\n",
+               data_pa, data_va);
+
+        // register the vm region
+        child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
+        child->mapped_info[child->total_mapped_region].npages =
+          parent->mapped_info[i].npages;
+        child->mapped_info[child->total_mapped_region].seg_type = DATA_SEGMENT;
+        child->total_mapped_region++;
+      }
+        break;
     }
   }
 

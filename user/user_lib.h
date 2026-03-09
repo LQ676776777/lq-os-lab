@@ -8,3 +8,7 @@ void* naive_malloc();
 void naive_free(void* va);
 int fork();
 void yield();
+// added @lab3_challenge2
+int sem_new(int value);
+int sem_P(int sem_id);
+int sem_V(int sem_id);
