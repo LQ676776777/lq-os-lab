@@ -10,6 +10,7 @@
 #include "vmm.h"
 #include "sched.h"
 #include "util/functions.h"
+#include "util/string.h"
 
 #include "spike_interface/spike_utils.h"
 
@@ -26,7 +27,11 @@ static void handle_syscall(trapframe *tf) {
   // kernel/syscall.c) to conduct real operations of the kernel side for a syscall.
   // IMPORTANT: return value should be returned to user app, or else, you will encounter
   // problems in later experiments!
-  panic( "call do_syscall to accomplish the syscall and lab1_1 here.\n" );
+  // panic( "call do_syscall to accomplish the syscall and lab1_1 here.\n" );
+  // 处理系统调用参数并获取返回值
+  long ret = do_syscall(tf->regs.a0, tf->regs.a1, tf->regs.a2, tf->regs.a3,
+                          tf->regs.a4, tf->regs.a5, tf->regs.a6, tf->regs.a7);
+  tf->regs.a0 = ret; // 返回值写回 a0
 
 }
 
@@ -41,7 +46,10 @@ void handle_mtimer_trap() {
   // TODO (lab1_3): increase g_ticks to record this "tick", and then clear the "SIP"
   // field in sip register.
   // hint: use write_csr to disable the SIP_SSIP bit in sip.
-  panic( "lab1_3: increase g_ticks by one, and clear SIP field in sip register.\n" );
+  // panic( "lab1_3: increase g_ticks by one, and clear SIP field in sip register.\n" );
+  g_ticks++; 
+    // 清除 SIP 寄存器的 SSIP 位
+  write_csr(sip, read_csr(sip) & ~SIP_SSIP);
 
 }
 
@@ -54,13 +62,34 @@ void handle_user_page_fault(uint64 mcause, uint64 sepc, uint64 stval) {
   sprint("handle_page_fault: %lx\n", stval);
   switch (mcause) {
     case CAUSE_STORE_PAGE_FAULT:
-      // TODO (lab2_3): implement the operations that solve the page fault to
-      // dynamically increase application stack.
-      // hint: first allocate a new physical page, and then, maps the new page to the
-      // virtual address that causes the page fault.
-      panic( "You need to implement the operations that actually handle the page fault in lab2_3.\n" );
+      {
+      // check if this is a COW page fault. added @lab3_challenge3
+      uint64 va = ROUNDDOWN(stval, PGSIZE);
+      pte_t *pte = page_walk((pagetable_t)current->pagetable, va, 0);
 
+      if (pte != 0 && (*pte & PTE_V) && (*pte & PTE_COW)) {
+        // This is a COW page fault: allocate new page, copy old data, remap with write perm
+        uint64 old_pa = PTE2PA(*pte);
+        void *new_pa = alloc_page();
+        memcpy(new_pa, (void *)old_pa, PGSIZE);
+
+        // update PTE: point to new page, add write perm, remove COW flag
+        *pte = PA2PTE(new_pa) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
+
+        // flush TLB to make the new mapping effective
+        flush_tlb();
+      } else {
+        // regular stack expansion page fault
+        void *pa = alloc_page();
+        if (pa == 0) {
+            panic("Out of memory during stack expansion!");
+        }
+        memset(pa, 0, PGSIZE);
+        user_vm_map((pagetable_t)current->pagetable, va, PGSIZE, (uint64)pa,
+               prot_to_type(PROT_WRITE | PROT_READ, 1));
+      }
       break;
+      }
     default:
       sprint("unknown page fault.\n");
       break;
@@ -75,7 +104,16 @@ void rrsched() {
   // hint: increase the tick_count member of current process by one, if it is bigger than
   // TIME_SLICE_LEN (means it has consumed its time slice), change its status into READY,
   // place it in the rear of ready queue, and finally schedule next process to run.
-  panic( "You need to further implement the timer handling in lab3_3.\n" );
+  // panic( "You need to further implement the timer handling in lab3_3.\n" );
+  //先进行tick_count++，如果判断为假，直接返回
+  current->tick_count++;
+  if(current->tick_count>=TIME_SLICE_LEN)
+  {
+    current->tick_count = 0;
+    current->status = READY;  // 修改状态为就绪
+    insert_to_ready_queue(current);  // 放入就绪队列末尾
+    schedule();  // 调度下一个进程
+  }
 
 }
 
