@@ -8,6 +8,7 @@
 #include "riscv.h"
 #include "vmm.h"
 #include "pmm.h"
+#include "vfs.h"
 #include "spike_interface/spike_utils.h"
 
 typedef struct elf_info_t {
@@ -145,6 +146,13 @@ void load_bincode_from_host_elf(process *p) {
 
   sprint("Application: %s\n", arg_bug_msg.argv[0]);
 
+  // if the path starts with '/', it is a VFS path, use VFS-based loading
+  // added @lab4_challenge2
+  if (arg_bug_msg.argv[0][0] == '/') {
+    load_bincode_from_vfs_elf(p, arg_bug_msg.argv[0]);
+    return;
+  }
+
   //elf loading. elf_ctx is defined in kernel/elf.h, used to track the loading process.
   elf_ctx elfloader;
   // elf_info is defined above, used to tie the elf file and its corresponding process.
@@ -167,6 +175,131 @@ void load_bincode_from_host_elf(process *p) {
 
   // close the host spike file
   spike_file_close( info.f );
+
+  sprint("Application program entry point (virtual address): 0x%lx\n", p->trapframe->epc);
+}
+
+//
+// elf info structure for VFS-based loading
+//
+typedef struct elf_info_vfs_t {
+  struct file *f;
+  process *p;
+} elf_info_vfs;
+
+//
+// allocater for VFS-based elf loading (same logic as elf_alloc_mb)
+//
+static void *elf_alloc_mb_vfs(elf_ctx *ctx, uint64 elf_pa, uint64 elf_va, uint64 size) {
+  elf_info_vfs *msg = (elf_info_vfs *)ctx->info;
+  kassert(size < PGSIZE);
+  void *pa = alloc_page();
+  if (pa == 0) panic("uvmalloc mem alloc failed\n");
+
+  memset((void *)pa, 0, PGSIZE);
+  user_vm_map((pagetable_t)msg->p->pagetable, elf_va, PGSIZE, (uint64)pa,
+         prot_to_type(PROT_WRITE | PROT_READ | PROT_EXEC, 1));
+
+  return pa;
+}
+
+//
+// VFS-based file reading for ELF loader.
+// reads nb bytes from vfs file at given offset into dest.
+//
+static uint64 elf_fpread_vfs(elf_ctx *ctx, void *dest, uint64 nb, uint64 offset) {
+  elf_info_vfs *msg = (elf_info_vfs *)ctx->info;
+  // seek to the given offset
+  vfs_lseek(msg->f, offset, LSEEK_SET);
+  // read nb bytes
+  return vfs_read(msg->f, (char *)dest, nb);
+}
+
+//
+// init elf_ctx for VFS-based elf loading
+//
+static elf_status elf_init_vfs(elf_ctx *ctx, void *info) {
+  ctx->info = info;
+
+  // load the elf header
+  if (elf_fpread_vfs(ctx, &ctx->ehdr, sizeof(ctx->ehdr), 0) != sizeof(ctx->ehdr)) return EL_EIO;
+
+  // check the signature (magic value) of the elf
+  if (ctx->ehdr.magic != ELF_MAGIC) return EL_NOTELF;
+
+  return EL_OK;
+}
+
+//
+// load elf segments using VFS
+//
+static elf_status elf_load_vfs(elf_ctx *ctx) {
+  elf_prog_header ph_addr;
+  int i, off;
+
+  for (i = 0, off = ctx->ehdr.phoff; i < ctx->ehdr.phnum; i++, off += sizeof(ph_addr)) {
+    if (elf_fpread_vfs(ctx, (void *)&ph_addr, sizeof(ph_addr), off) != sizeof(ph_addr)) return EL_EIO;
+
+    if (ph_addr.type != ELF_PROG_LOAD) continue;
+    if (ph_addr.memsz < ph_addr.filesz) return EL_ERR;
+    if (ph_addr.vaddr + ph_addr.memsz < ph_addr.vaddr) return EL_ERR;
+
+    // allocate memory block before elf loading
+    void *dest = elf_alloc_mb_vfs(ctx, ph_addr.vaddr, ph_addr.vaddr, ph_addr.memsz);
+
+    // actual loading
+    if (elf_fpread_vfs(ctx, dest, ph_addr.memsz, ph_addr.off) != ph_addr.memsz)
+      return EL_EIO;
+
+    // record the vm region in proc->mapped_info
+    int j;
+    for( j=0; j<PGSIZE/sizeof(mapped_region); j++ )
+      if( (process*)(((elf_info_vfs*)(ctx->info))->p)->mapped_info[j].va == 0x0 ) break;
+
+    ((process*)(((elf_info_vfs*)(ctx->info))->p))->mapped_info[j].va = ph_addr.vaddr;
+    ((process*)(((elf_info_vfs*)(ctx->info))->p))->mapped_info[j].npages = 1;
+
+    if( ph_addr.flags == (SEGMENT_READABLE|SEGMENT_EXECUTABLE) ){
+      ((process*)(((elf_info_vfs*)(ctx->info))->p))->mapped_info[j].seg_type = CODE_SEGMENT;
+      sprint( "CODE_SEGMENT added at mapped info offset:%d\n", j );
+    }else if ( ph_addr.flags == (SEGMENT_READABLE|SEGMENT_WRITABLE) ){
+      ((process*)(((elf_info_vfs*)(ctx->info))->p))->mapped_info[j].seg_type = DATA_SEGMENT;
+      sprint( "DATA_SEGMENT added at mapped info offset:%d\n", j );
+    }else
+      panic( "unknown program segment encountered, segment flag:%d.\n", ph_addr.flags );
+
+    ((process*)(((elf_info_vfs*)(ctx->info))->p))->total_mapped_region ++;
+  }
+
+  return EL_OK;
+}
+
+//
+// load the elf of user application from VFS file system.
+//
+void load_bincode_from_vfs_elf(process *p, const char *path) {
+  sprint("Application: %s\n", path);
+
+  elf_ctx elfloader;
+  elf_info_vfs info;
+
+  // open file through VFS
+  info.f = vfs_open(path, O_RDONLY);
+  if (info.f == NULL) panic("load_bincode_from_vfs_elf: cannot open file %s\n", path);
+  info.p = p;
+
+  // init elfloader context
+  if (elf_init_vfs(&elfloader, &info) != EL_OK)
+    panic("fail to init elfloader from vfs.\n");
+
+  // load elf
+  if (elf_load_vfs(&elfloader) != EL_OK) panic("Fail on loading elf from vfs.\n");
+
+  // entry address
+  p->trapframe->epc = elfloader.ehdr.entry;
+
+  // close the VFS file
+  vfs_close(info.f);
 
   sprint("Application program entry point (virtual address): 0x%lx\n", p->trapframe->epc);
 }

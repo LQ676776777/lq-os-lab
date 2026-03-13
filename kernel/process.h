@@ -106,6 +106,8 @@ process* alloc_process();
 int free_process( process* proc );
 // fork a child from parent
 int do_fork(process* parent);
+// exec a new program in current process. added @lab4_challenge2
+int do_exec(char *path);
 
 // current running process
 extern process* current;

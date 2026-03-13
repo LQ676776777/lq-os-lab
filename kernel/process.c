@@ -271,3 +271,67 @@ int do_fork( process* parent)
 
   return child->pid;
 }
+
+//
+// implements exec syscall in kernel. added @lab4_challenge2
+// replaces the current process's code, data, heap, and stack with a new ELF program.
+//
+int do_exec(char *path) {
+  process *p = current;
+
+  // 1. unmap and free old code and data segments
+  for (int i = 0; i < p->total_mapped_region; i++) {
+    if (p->mapped_info[i].seg_type == CODE_SEGMENT ||
+        p->mapped_info[i].seg_type == DATA_SEGMENT) {
+      uint64 va = p->mapped_info[i].va;
+      uint64 npages = p->mapped_info[i].npages;
+      user_vm_unmap((pagetable_t)p->pagetable, va, npages * PGSIZE, 1);
+      // clear the mapped_info entry
+      p->mapped_info[i].va = 0;
+      p->mapped_info[i].npages = 0;
+      p->mapped_info[i].seg_type = 0;
+    }
+  }
+
+  // 2. unmap and free heap pages
+  for (uint64 va = p->user_heap.heap_bottom; va < p->user_heap.heap_top; va += PGSIZE) {
+    // check if this page is in the free list (already freed by user)
+    int is_free = 0;
+    for (int j = 0; j < p->user_heap.free_pages_count; j++) {
+      if (p->user_heap.free_pages_address[j] == va) {
+        is_free = 1;
+        break;
+      }
+    }
+    if (!is_free) {
+      user_vm_unmap((pagetable_t)p->pagetable, va, PGSIZE, 1);
+    }
+  }
+
+  // 3. reset heap manager
+  p->user_heap.heap_top = USER_FREE_ADDRESS_START;
+  p->user_heap.heap_bottom = USER_FREE_ADDRESS_START;
+  p->user_heap.free_pages_count = 0;
+  p->mapped_info[HEAP_SEGMENT].npages = 0;
+
+  // 4. reset total_mapped_region to 4 (STACK, CONTEXT, SYSTEM, HEAP)
+  p->total_mapped_region = 4;
+
+  // 5. reset user stack: clear the stack page content and reset sp
+  uint64 stack_pa = lookup_pa(p->pagetable, p->mapped_info[STACK_SEGMENT].va);
+  memset((void *)stack_pa, 0, PGSIZE);
+  p->trapframe->regs.sp = USER_STACK_TOP;
+
+  // 6. clear all general-purpose registers in trapframe
+  memset(&(p->trapframe->regs), 0, sizeof(p->trapframe->regs));
+  p->trapframe->regs.sp = USER_STACK_TOP;
+
+  // 7. reset file management: close all opened files and reinitialize
+  reclaim_proc_file_management(p->pfiles);
+  p->pfiles = init_proc_file_management();
+
+  // 8. load new ELF from VFS
+  load_bincode_from_vfs_elf(p, path);
+
+  return 0;
+}
