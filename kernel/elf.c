@@ -39,7 +39,7 @@ static void *elf_alloc_mb(elf_ctx *ctx, uint64 elf_pa, uint64 elf_va, uint64 siz
 //
 static uint64 elf_fpread(elf_ctx *ctx, void *dest, uint64 nb, uint64 offset) {
   elf_info *msg = (elf_info *)ctx->info;
-  vfs_lseek(msg->f, offset, SEEK_SET);
+  vfs_lseek(msg->f, offset, LSEEK_SET);
   return vfs_read(msg->f, dest, nb);
 }
 

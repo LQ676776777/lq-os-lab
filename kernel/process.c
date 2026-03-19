@@ -169,6 +169,12 @@ int free_process( process* proc ) {
   // as it is different from regular OS, which needs to run 7x24.
   proc->status = ZOMBIE;
 
+  // wake up parent if it's blocked (waiting for this child). added @lab4_challenge3
+  if (proc->parent != NULL && proc->parent->status == BLOCKED) {
+    proc->parent->status = READY;
+    insert_to_ready_queue(proc->parent);
+  }
+
   return 0;
 }
 
@@ -270,4 +276,118 @@ int do_fork( process* parent)
   insert_to_ready_queue( child );
 
   return child->pid;
+}
+
+//
+// implements exec syscall in kernel. added @lab4_challenge3
+// replaces the current process with a new ELF program, passing one argument string.
+//
+int do_exec(char *path, char *arg) {
+  process *p = current;
+
+  // IMPORTANT: copy path and arg to local buffers BEFORE freeing old segments,
+  // because they may reside on user heap pages that will be freed below.
+  char path_buf[256], arg_buf[256];
+  strcpy(path_buf, path);
+  if (arg != NULL && arg[0] != '\0')
+    strcpy(arg_buf, arg);
+  else
+    arg_buf[0] = '\0';
+
+  // 1. unmap and free old code and data segments
+  for (int i = 0; i < p->total_mapped_region; i++) {
+    if (p->mapped_info[i].seg_type == CODE_SEGMENT ||
+        p->mapped_info[i].seg_type == DATA_SEGMENT) {
+      uint64 va = p->mapped_info[i].va;
+      uint64 npages = p->mapped_info[i].npages;
+      user_vm_unmap((pagetable_t)p->pagetable, va, npages * PGSIZE, 1);
+      p->mapped_info[i].va = 0;
+      p->mapped_info[i].npages = 0;
+      p->mapped_info[i].seg_type = 0;
+    }
+  }
+
+  // 2. unmap and free heap pages
+  for (uint64 va = p->user_heap.heap_bottom; va < p->user_heap.heap_top; va += PGSIZE) {
+    int is_free = 0;
+    for (int j = 0; j < p->user_heap.free_pages_count; j++) {
+      if (p->user_heap.free_pages_address[j] == va) { is_free = 1; break; }
+    }
+    if (!is_free)
+      user_vm_unmap((pagetable_t)p->pagetable, va, PGSIZE, 1);
+  }
+
+  // 3. reset heap manager
+  p->user_heap.heap_top = USER_FREE_ADDRESS_START;
+  p->user_heap.heap_bottom = USER_FREE_ADDRESS_START;
+  p->user_heap.free_pages_count = 0;
+  p->mapped_info[HEAP_SEGMENT].npages = 0;
+
+  // 4. reset total_mapped_region to 4 (STACK, CONTEXT, SYSTEM, HEAP)
+  p->total_mapped_region = 4;
+
+  // 5. reset user stack and registers
+  uint64 stack_pa = lookup_pa(p->pagetable, p->mapped_info[STACK_SEGMENT].va);
+  memset((void *)stack_pa, 0, PGSIZE);
+  memset(&(p->trapframe->regs), 0, sizeof(p->trapframe->regs));
+  p->trapframe->regs.sp = USER_STACK_TOP;
+
+  // 6. reset file management: close all opened files and reset count
+  for (int fd = 0; fd < MAX_FILES; fd++)
+    p->pfiles->opened_files[fd].status = FD_NONE;
+  p->pfiles->nfiles = 0;
+
+  // 7. load new ELF from VFS
+  load_bincode_from_host_elf(p, path_buf);
+
+  // 8. pass argument to new program via user stack
+  // The new program's main(argc, argv) expects:
+  //   a0 = argc, a1 = argv (pointer to array of char*)
+  // We place the arg string, argv[0] pointer, and argv array on the user stack.
+  if (arg_buf[0] != '\0') {
+    uint64 sp = p->trapframe->regs.sp;
+
+    // copy the argument string to the stack
+    int arg_len = strlen(arg_buf) + 1; // including null terminator
+    sp -= arg_len;
+    sp &= ~0x7ULL; // align to 8 bytes
+    uint64 arg_str_va = sp;
+    // copy arg string to user stack (physical address)
+    char *arg_str_pa = (char *)user_va_to_pa(p->pagetable, (void *)arg_str_va);
+    strcpy(arg_str_pa, arg_buf);
+
+    // place argv[0] = pointer to the arg string
+    sp -= sizeof(uint64);
+    uint64 argv_va = sp;
+    *(uint64 *)user_va_to_pa(p->pagetable, (void *)argv_va) = arg_str_va;
+
+    // align sp to 16 bytes (RISC-V calling convention)
+    sp &= ~0xFULL;
+    p->trapframe->regs.sp = sp;
+
+    // set argc = 1, argv = pointer to argv array
+    p->trapframe->regs.a0 = 1;
+    p->trapframe->regs.a1 = argv_va;
+  }
+
+  return 0;
+}
+
+//
+// implements wait syscall in kernel. added @lab4_challenge3
+// parent process waits for a child process to exit.
+//
+int do_wait(int pid) {
+  // find the child process
+  process *child = &procs[pid];
+
+  // block the parent until the child finishes
+  // the child's free_process will wake us up by inserting us to ready queue
+  current->status = BLOCKED;
+  schedule();
+
+  // child has exited, mark it as FREE for reuse
+  child->status = FREE;
+
+  return 0;
 }
